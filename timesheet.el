@@ -700,38 +700,34 @@ Otherwise, simply leave point at the existing heading."
 
 (defun timesheet-weekly (week)
   "Calculate weekly timesheet for the given WEEK."
-  (let* ((all-project-times (timesheet-project-times))
-         (week-label (timesheet-period-heading week nil t))
-         project-times ;; day project hours
-         dates-cols ;; date to column alist
-         projects
-         project-rows ;; project to row alist
-         table-top) ;; point at the beginning of the table
+  (let ((all-project-times (timesheet-project-times))
+        project-times ;; project day hours
+        dates-cols    ;; date to column alist
+        project-rows  ;; project to row alist
+        table-top)    ;; point at the beginning of the table
+    (timesheet-do-period-heading week nil t)
     (end-of-line)
     (insert "\n")
     ;; setup dates-cols alist
     (dotimes (i 7)
-      (let* ((day (timesheet-add-days week i)))
+      (let ((day (timesheet-add-days week i)))
         ;; (when (= i 6)
         ;;   (setq week-sunday day))
         (push (cons (format-time-string "%Y-%m-%d" day) (+ i 2)) dates-cols)))
-    (dolist (pt all-project-times)
-      (let* ((day-total (nth 1 pt))     ;; 2013-06-11 Tue = 6.50 hours
-             (project-total (nth 2 pt)) ;; SuperProject = 6.50 hours
-             day
-             project
-             hours)
-        (when (string-match "^\\([0-9\-]+\\) ... = \\([0-9\.]+\\) hours" day-total)
-          (setq day (match-string 1 day-total)) ;; don't use match 2
-          (when (string-match "^\\(.+\\) = \\([0-9\.]+\\) hours" project-total)
-            (setq project (match-string 1 project-total))
-            (setq hours (match-string 2 project-total))))
-        (when (and day project (assoc day dates-cols))
-          (unless (assoc project project-rows)
-            (push (cons project 0) project-rows))
-          (push (list project day hours) project-times))
-        ))
-    ;; now begin to construct the table
+    (pcase-dolist (`(_ ,day-total ,project-total) all-project-times)
+      (let ((day (when (string-match "^\\([0-9-]+\\) ... = [0-9.]+ hours"
+				     day-total)
+		   (match-string 1 day-total))))
+        ;; Only use this project-time if it's in our time range.
+	(when (and day
+		   (assoc day dates-cols)
+		   (string-match "^\\(.+\\) = \\([0-9.]+\\) hours"
+				 project-total))
+	  (push (list (match-string 1 project-total) ; project name
+		      day
+		      (match-string 2 project-total)) ; project hours
+		project-times))))
+    ;; Begin to construct the table.
     (setq table-top (point))
     (insert "#+BEGIN: columnview :hlines 1 :id global\n")
     (insert "| /Project/ | Mon | Tue | Wed | Thu | Fri | Sat | Sun | /Total/ |\n")
@@ -741,13 +737,11 @@ Otherwise, simply leave point at the existing heading."
     (insert "| /Daily/   |     |     |     |     |     |     |     |         |\n")
     (insert "#+TBLFM: @2$9..@>$9=vsum($2..$8);%.2f;::@>$2..@>$8='(format \"%3.2f\" (apply '+ '(@2..@-1)));N;\n")
     (insert "#+END:")
-    ;; sort by project
-    (dolist (p project-rows)
-      (push (car p) projects))
-    (setq projects (sort projects 'string<)) ;; sort is destructive :(
-    (setq project-rows nil)
-    (let* ((row 3))
-      (dolist (p projects)
+    ;; Insert per-project rows.
+    (let ((row 3))
+      (dolist (p (sort
+		  (delete-dups (mapcar #'car project-times))
+		  #'string<))
         (push (cons p row) project-rows)
         (when (> row 3)
           (timesheet-table-goto table-top 1 (1- row))
@@ -756,12 +750,13 @@ Otherwise, simply leave point at the existing heading."
         (insert p)
         (setq row (1+ row))))
     (goto-char table-top)
+    ;; Insert hours into day/project cells.
     (dolist (pt project-times)
       (timesheet-table-goto table-top
-                  (cdr (assoc (nth 1 pt) dates-cols))
-                  (cdr (assoc (car pt) project-rows)))
+			    (cdr (assoc (nth 1 pt) dates-cols))
+			    (cdr (assoc (car pt) project-rows)))
       (insert (nth 2 pt)))
-    ;; compute formulae in table
+    ;; Compute formulae in table.
     (org-table-iterate)
     (org-table-align)))
 
