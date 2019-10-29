@@ -630,59 +630,65 @@ Otherwise, return nil.  Optionally using WITHPATH."
 	     (push (cdr path) project-times))))
         (sort project-times 'timesheet-cmp-string-lists)))))
 
-(defun timesheet-goto-weekly ()
-  "Goto (or create) the Weekly heading."
-  (let* ((weekly (org-find-exact-headline-in-buffer "Weekly" nil t)))
-    (when weekly
-      (goto-char weekly))
-    (unless weekly
-      (message "adding a Weekly...")
+(defun timesheet-toplevel-period-heading (&optional daily)
+  "Goto (or create) the top-level heading for time reports.
+Assume the Weekly heading unless optional arg DAILY is non-nil."
+  (let* ((label (if daily "Daily" "Weekly"))
+	 (heading (org-find-exact-headline-in-buffer label nil t)))
+    (if heading
+	(goto-char heading)
+      (message "adding a %s section..." label)
       (goto-char (point-max))
-      (insert "\n* Weekly"))
+      (insert (format "\n* %s" label)))
     (beginning-of-line)))
 
-;; FIX: insert in order
-(defun timesheet-heading-week (week &optional delete-existing-week)
-  "Goto (or create) the Timesheet WEEK heading.
-If DELETE-EXISTING-WEEK is set then the old heading is removed."
-  (timesheet-goto-weekly)
+(defun timesheet--make-timesheet-heading-text (date daily)
+  "Make a timesheet report heading for DATE.
+If DAILY is non-nil, make a daily heading.  Otherwise, make a
+weekly heading."
+  (if daily
+      (format-time-string "%Y-%m-%d" date)
+    (format "%s week #%d: %s - %s"
+            (format-time-string "%Y" date)
+            (timesheet-week-number date)
+            (format-time-string "%B %d" date)
+            (format-time-string "%B %d" (timesheet-add-days date 6)))))
+
+(defun timesheet-do-period-heading (date &optional daily replace)
+  "Goto (and maybe insert) the heading for period beginning DATE.
+If optional arg DAILY is non-nil, insert a daily heading,
+otherwise insert weekly.  If optional arg REPLACE is non-nil,
+replace an existing heading (and its contents) if found.
+Otherwise, simply leave point at the existing heading."
+  (timesheet-toplevel-period-heading daily)
   (recenter-top-bottom 1)
-  (let* ((week-sunday (timesheet-add-days week 6))
-         (week-label (format "%s week #%d: %s - %s"
-                             (format-time-string "%Y" week)
-                             (timesheet-week-number week)
-                             (format-time-string "%B %d" week)
-                             (format-time-string "%B %d" week-sunday)))
-         (w-head (org-goto-first-child))
-         firstweek
-         found)
-    (end-of-line)
-    (unless w-head
-      (setq firstweek t))
-    (while w-head
-      (let* ((w (nth 4 (org-heading-components)))
-             (prev (point)))
-        (if (string= w week-label)
-            (progn
-              (setq w-head nil)
-              (setq found t))
-          (setq w-head (org-get-next-sibling)))
-        (unless w-head ;; we have no children
-          (goto-char prev)
-          (end-of-line))
-        )
-      )
-    (when (and found delete-existing-week)
-      (org-insert-heading)
-      (org-cut-subtree)
-      (forward-line -1))
-    (unless found
-      (org-insert-heading-after-current)
-      (insert week-label)
-      (when firstweek
-        (org-demote-subtree)))
-    (beginning-of-line)
-    week-label))
+  (let* ((org-insert-heading-respect-content t)
+	 (top (point))
+	 (h-text (timesheet--make-timesheet-heading-text date daily))
+         (existing
+	  (catch 'found
+	    (org-map-tree
+	     (lambda ()
+	       (when (string= h-text (nth 4 (org-heading-components)))
+		 (throw 'found (point))))))))
+    (if (and existing (null replace))
+	(goto-char existing)
+      (unless (prog1 (or (when existing
+			   (goto-char existing)
+			   (org-cut-subtree))
+			 (org-goto-first-child))
+		(org-insert-heading))
+	;; There were no child headings.
+	(org-do-demote))
+      (insert h-text)
+      (goto-char top)
+      (org-sort-entries t ?a)
+      ;; Yuck.
+      (re-search-forward
+       (format org-complex-heading-regexp-format
+	       (regexp-quote h-text))
+       (save-excursion (org-end-of-subtree) (point)) t)
+      (beginning-of-line))))
 
 ;;;###autoload
 (defun timesheet-table-goto (top col row)
@@ -695,7 +701,7 @@ If DELETE-EXISTING-WEEK is set then the old heading is removed."
 (defun timesheet-weekly (week)
   "Calculate weekly timesheet for the given WEEK."
   (let* ((all-project-times (timesheet-project-times))
-         (week-label (timesheet-heading-week week t))
+         (week-label (timesheet-period-heading week nil t))
          project-times ;; day project hours
          dates-cols ;; date to column alist
          projects
