@@ -760,6 +760,57 @@ Otherwise, simply leave point at the existing heading."
     (org-table-iterate)
     (org-table-align)))
 
+(defun timesheet-daily (day)
+  "Calculate daily timesheet for the given DAY."
+  (let ((all-project-times (timesheet-project-times))
+	(day-label (format-time-string "%Y-%m-%d" day))
+	project-times
+	project-rows
+	table-top)
+    (timesheet-do-period-heading day t t)
+    (end-of-line)
+    (insert "\n")
+    ;; Select applicable project-times.
+    (pcase-dolist (`(_ ,day-total ,project-total) all-project-times)
+      (let ((day (when (string-match "^\\([0-9-]+\\) ... = [0-9.]+ hours"
+				     day-total)
+		   (match-string 1 day-total))))
+	(when (and day
+		   (string= day day-label)
+		   (string-match "^\\(.+\\) = \\([0-9.]+\\) hours"
+				 project-total))
+	  (push (list (match-string 1 project-total) ; project name
+		      day
+		      (match-string 2 project-total)) ; project hours
+		project-times))))
+    (setq table-top (point))
+    (insert (format "| /Project/ | %s |\n"
+		    (format-time-string "%a" day)))
+    (insert "|-----------|-----|\n")
+    (insert "|           |     |\n")
+    (insert "|-----------|-----|\n")
+    (insert "| /Totals/  |     |\n")
+    (insert "#+TBLFM: @>$2=vsum(@I..@II);%.2f;\n")
+    ;; Insert a row per project.
+    (let ((row 2))
+      (dolist (p (sort
+		  (delete-dups (mapcar #'car project-times))
+		  #'string<))
+	(push (cons p row) project-rows)
+	(when (> row 2)
+	  (timesheet-table-goto table-top 1 (1- row))
+	  (org-table-insert-row t))
+	(timesheet-table-goto table-top 1 row)
+	(insert p)
+	(setq row (1+ row))))
+    (goto-char table-top)
+    (dolist (pt project-times)
+      (timesheet-table-goto table-top
+			    2 (cdr (assoc (car pt) project-rows)))
+      (insert (nth 2 pt)))
+    (org-table-iterate)
+    (org-table-align)))
+
 (defun timesheet-week-time (time)
   "Round TIME to beginning of the week."
   (let* ((time-cal (decode-time time))
@@ -803,6 +854,27 @@ Otherwise, simply leave point at the existing heading."
   "Calculate timesheet last week."
   (interactive)
   (timesheet-weekly (timesheet-last-week)))
+
+;;;###autoload
+(defun timesheet-daily-today ()
+  "Calculate timesheet for today."
+  (interactive)
+  (timesheet-daily (timesheet-today)))
+
+;;;###autoload
+(defun timesheet-daily-yesterday ()
+  "Calculate timesheet for yesterday."
+  (interactive)
+  (timesheet-daily (timesheet-yesterday)))
+
+;;;###autoload
+(defun timesheet-daily-at-point ()
+  "Calculate timesheet for day under point."
+  (interactive)
+  (let ((day (timesheet-at-point)))
+    (if day
+        (timesheet-daily (timesheet-midnight day))
+      (message (concat "no " org-clock-string " at point!")))))
 
 ;; NOTE: this is not handled particularly well... and it needs a better user interface
 ;; (defun timesheet-overlap (day)
