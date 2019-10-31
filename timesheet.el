@@ -662,8 +662,7 @@ replace an existing heading (and its contents) if found.
 Otherwise, simply leave point at the existing heading."
   (timesheet-toplevel-period-heading daily)
   (recenter-top-bottom 1)
-  (let* ((org-insert-heading-respect-content t)
-	 (top (point))
+  (let* ((top (point))
 	 (h-text (timesheet--make-timesheet-heading-text date daily))
          (existing
 	  (catch 'found
@@ -673,12 +672,14 @@ Otherwise, simply leave point at the existing heading."
 		 (throw 'found (point))))))))
     (if (and existing (null replace))
 	(goto-char existing)
-      (unless (prog1 (or (when existing
-			   (goto-char existing)
-			   (org-cut-subtree))
-			 (org-goto-first-child))
-		(org-insert-heading))
-	;; There were no child headings.
+      (when existing
+	(goto-char existing)
+	(org-cut-subtree)
+	(goto-char top))
+      (end-of-line)
+      (if (org-goto-first-child)
+	  (org-insert-heading-respect-content)
+	(org-insert-heading)
 	(org-do-demote))
       (insert h-text)
       (goto-char top)
