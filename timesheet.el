@@ -275,6 +275,13 @@ Otherwise, return nil.  Optionally using WITHPATH."
          (= (nth 4 dt1) (nth 4 dt2))
          (= (nth 3 dt1) (nth 3 dt2)))))
 
+(defun timesheet-ymd-to-time (date-string)
+  "Convert a date string like YYYY-MM-DD to a time value.
+Returns the value of midnight on that day."
+  (encode-time (append
+		'(0 0 0)
+		(nthcdr 3 (parse-time-string date-string)))))
+
 (defun timesheet-midnight (day-time)
   "Round DAY-TIME to midnight on that day."
   (let* ((day-time-cal (decode-time day-time))
@@ -609,8 +616,14 @@ Otherwise, return nil.  Optionally using WITHPATH."
       (setq cmp -1))
     (= cmp -1)))
 
-(defun timesheet-project-times ()
-  "Get list of project times for the given week."
+(defun timesheet-project-times (&optional start end)
+  "Get list of all project times under the Timesheet heading.
+If optional START and END are given, only return times in that
+range.
+
+Return value is a list of times that look like, for instance:
+
+(\"2019-10\" \"2019-10-28 Mon = 7.00 hours\" \"Report writing = 3.00 hours\")"
   (save-excursion
     (save-restriction
       (timesheet-heading)
@@ -621,12 +634,26 @@ Otherwise, return nil.  Optionally using WITHPATH."
 		     (org-end-of-subtree)
 		     (line-number-at-pos))))
 	(timesheet-calc-all))
-      (let (path project-times)
+      (let ((date-re "^[[:digit:]]\\{4\\}-[[:digit:]]\\{2\\}-[[:digit:]]\\{2\\}")
+	    path project-times date)
 	(org-map-tree
 	 (lambda ()
 	   (setq path (timesheet-get-heading-path))
 	   (when (and (= (length path) 4)
-		      (null (member path project-times)))
+		      (null (member path project-times))
+		      ;; If we're going to compare a start/end, then
+		      ;; parse the date.
+		      (or (null (or start end))
+			  (and (string-match
+				date-re
+				(nth 2 path))
+			       (setq date
+				     (timesheet-ymd-to-time
+				      (match-string 0 (nth 2 path))))))
+		      (or (null start)
+			  (time-less-p start date))
+		      (or (null end)
+			  (time-less-p date end)))
 	     (push (cdr path) project-times))))
         (sort project-times 'timesheet-cmp-string-lists)))))
 
