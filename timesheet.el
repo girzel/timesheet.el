@@ -117,6 +117,12 @@ slow down invoice creation."
   :type 'boolean
   :group 'timesheet)
 
+(defcustom timesheet-default-clocktable-options
+  ":maxlevel 4 :emphasize nil"
+  "Default options to add to the reporting clocktables."
+  :type 'string
+  :group 'timesheet)
+
 ;; get the next invoice number (and increment the counter)
 ;; if the argument is given.. set the next invoice number
 ;;;###autoload
@@ -590,15 +596,6 @@ Returns the value of midnight on that day."
 	  (push day seen))
 	(beginning-of-line 0)))))
 
-;;;###autoload
-(defun timesheet-weekly-at-point ()
-  "Calculate week for the date on this line."
-  (interactive)
-  (let ((day (timesheet-at-point)))
-    (if day
-        (timesheet-weekly (timesheet-week-time day))
-      (message (concat "no " org-clock-string " at point!")))))
-
 (defun timesheet-cmp-string-lists (asl bsl)
   "Compare two string lists and return t if ASL < BSL."
   (let ((i 0)
@@ -657,10 +654,14 @@ Return value is a list of times that look like, for instance:
 	     (push (cdr path) project-times))))
         (sort project-times 'timesheet-cmp-string-lists)))))
 
-(defun timesheet-toplevel-period-heading (&optional daily)
+(defun timesheet-toplevel-period-heading (period)
   "Goto (or create) the top-level heading for time reports.
 Assume the Weekly heading unless optional arg DAILY is non-nil."
-  (let* ((label (if daily "Daily" "Weekly"))
+  (let* ((label (pcase period
+		  ('day "Daily")
+		  ('week "Weekly")
+		  ('month "Monthly")
+		  (- "Other")))
 	 (heading (org-find-exact-headline-in-buffer label nil t)))
     (if heading
 	(goto-char heading)
@@ -669,28 +670,28 @@ Assume the Weekly heading unless optional arg DAILY is non-nil."
       (insert (format "\n* %s" label)))
     (beginning-of-line)))
 
-(defun timesheet--make-timesheet-heading-text (date daily)
+(defun timesheet--make-timesheet-heading-text (date period)
   "Make a timesheet report heading for DATE.
-If DAILY is non-nil, make a daily heading.  Otherwise, make a
-weekly heading."
-  (if daily
-      (format-time-string "%Y-%m-%d" date)
-    (format "%s week #%d: %s - %s"
+PERIOD may be one of the symbols `day', `week', or `month'."
+  (pcase period
+    ('day (format-time-string "%Y-%m-%d" date))
+    ('week (format "%s week #%d: %s - %s"
             (format-time-string "%Y" date)
             (timesheet-week-number date)
             (format-time-string "%B %d" date)
-            (format-time-string "%B %d" (timesheet-add-days date 6)))))
+            (format-time-string "%B %d" (timesheet-add-days date 6))))
+    (_ (format-time-string "%B" date))))
 
-(defun timesheet-do-period-heading (date &optional daily replace)
+(defun timesheet-do-period-heading (date &optional period replace)
   "Goto (and maybe insert) the heading for period beginning DATE.
 If optional arg DAILY is non-nil, insert a daily heading,
 otherwise insert weekly.  If optional arg REPLACE is non-nil,
 replace an existing heading (and its contents) if found.
 Otherwise, simply leave point at the existing heading."
-  (timesheet-toplevel-period-heading daily)
+  (timesheet-toplevel-period-heading period)
   (recenter-top-bottom 1)
   (let* ((top (point))
-	 (h-text (timesheet--make-timesheet-heading-text date daily))
+	 (h-text (timesheet--make-timesheet-heading-text date period))
          (existing
 	  (catch 'found
 	    (org-map-tree
@@ -726,118 +727,45 @@ Otherwise, simply leave point at the existing heading."
   (forward-line row)
   (org-table-goto-column col))
 
-(defun timesheet-weekly (week)
-  "Calculate weekly timesheet for the given WEEK."
-  (let ((all-project-times (timesheet-project-times))
-        project-times ;; project day hours
-        dates-cols    ;; date to column alist
-        project-rows  ;; project to row alist
-        table-top)    ;; point at the beginning of the table
-    (timesheet-do-period-heading week nil t)
-    (end-of-line)
-    (insert "\n")
-    ;; setup dates-cols alist
-    (dotimes (i 7)
-      (let ((day (timesheet-add-days week i)))
-        ;; (when (= i 6)
-        ;;   (setq week-sunday day))
-        (push (cons (format-time-string "%Y-%m-%d" day) (+ i 2)) dates-cols)))
-    (pcase-dolist (`(_ ,day-total ,project-total) all-project-times)
-      (let ((day (when (string-match "^\\([0-9-]+\\) ... = [0-9.]+ hours"
-				     day-total)
-		   (match-string 1 day-total))))
-        ;; Only use this project-time if it's in our time range.
-	(when (and day
-		   (assoc day dates-cols)
-		   (string-match "^\\(.+\\) = \\([0-9.]+\\) hours"
-				 project-total))
-	  (push (list (match-string 1 project-total) ; project name
-		      day
-		      (match-string 2 project-total)) ; project hours
-		project-times))))
-    ;; Begin to construct the table.
-    (setq table-top (point))
-    (insert "#+BEGIN: columnview :hlines 1 :id global\n")
-    (insert "| /Project/ | Mon | Tue | Wed | Thu | Fri | Sat | Sun | /Total/ |\n")
-    (insert "|-----------+-----+-----+-----+-----+-----+-----+-----+---------|\n")
-    (insert "|           |     |     |     |     |     |     |     |         |\n")
-    (insert "|-----------+-----+-----+-----+-----+-----+-----+-----+---------|\n")
-    (insert "| /Daily/   |     |     |     |     |     |     |     |         |\n")
-    (insert "#+TBLFM: @2$9..@>$9=vsum($2..$8);%.2f;::@>$2..@>$8='(format \"%3.2f\" (apply '+ '(@2..@-1)));N;\n")
-    (insert "#+END:")
-    ;; Insert per-project rows.
-    (let ((row 3))
-      (dolist (p (sort
-		  (delete-dups (mapcar #'car project-times))
-		  #'string<))
-        (push (cons p row) project-rows)
-        (when (> row 3)
-          (timesheet-table-goto table-top 1 (1- row))
-          (org-table-insert-row t))
-        (timesheet-table-goto table-top 1 row)
-        (insert p)
-        (setq row (1+ row))))
-    (goto-char table-top)
-    ;; Insert hours into day/project cells.
-    (dolist (pt project-times)
-      (timesheet-table-goto table-top
-			    (cdr (assoc (nth 1 pt) dates-cols))
-			    (cdr (assoc (car pt) project-rows)))
-      (insert (nth 2 pt)))
-    ;; Compute formulae in table.
-    (org-table-iterate)
-    (org-table-align)))
+(defun timesheet-period (start period-or-end)
+  "Produce a timesheet for a period of time.
+START is a time value.  PERIOD-OR-END is either a time value
+representing the end, or one of the symbols `day', `week', or
+`month'.
 
-(defun timesheet-daily (day)
-  "Calculate daily timesheet for the given DAY."
-  (let ((all-project-times (timesheet-project-times))
-	(day-label (format-time-string "%Y-%m-%d" day))
-	project-times
-	project-rows
+The timesheet will be inserted under a dedicated heading in the
+buffer.  If PERIOD-OR-END is one of the pre-set symbols, the
+timesheet will be inserted under a heading corresponding to that
+period.  Otherwise it will go under the heading \"Other\"."
+  (let ((end (if (consp period-or-end) period-or-end
+	       (pcase period-or-end
+		 ('day (timesheet-add-days start 1))
+		 ('week (timesheet-add-days start 7))
+		 ('month (timesheet-first-day-next-month start)))))
 	table-top)
-    (timesheet-do-period-heading day t t)
-    (end-of-line)
-    (insert "\n")
-    ;; Select applicable project-times.
-    (pcase-dolist (`(_ ,day-total ,project-total) all-project-times)
-      (let ((day (when (string-match "^\\([0-9-]+\\) ... = [0-9.]+ hours"
-				     day-total)
-		   (match-string 1 day-total))))
-	(when (and day
-		   (string= day day-label)
-		   (string-match "^\\(.+\\) = \\([0-9.]+\\) hours"
-				 project-total))
-	  (push (list (match-string 1 project-total) ; project name
-		      day
-		      (match-string 2 project-total)) ; project hours
-		project-times))))
-    (setq table-top (point))
-    (insert (format "| /Project/ | %s |\n"
-		    (format-time-string "%a" day)))
-    (insert "|-----------|-----|\n")
-    (insert "|           |     |\n")
-    (insert "|-----------|-----|\n")
-    (insert "| /Totals/  |     |\n")
-    (insert "#+TBLFM: @>$2=vsum(@I..@II);%.2f;\n")
-    ;; Insert a row per project.
-    (let ((row 2))
-      (dolist (p (sort
-		  (delete-dups (mapcar #'car project-times))
-		  #'string<))
-	(push (cons p row) project-rows)
-	(when (> row 2)
-	  (timesheet-table-goto table-top 1 (1- row))
-	  (org-table-insert-row t))
-	(timesheet-table-goto table-top 1 row)
-	(insert p)
-	(setq row (1+ row))))
-    (goto-char table-top)
-    (dolist (pt project-times)
-      (timesheet-table-goto table-top
-			    2 (cdr (assoc (car pt) project-rows)))
-      (insert (nth 2 pt)))
-    (org-table-iterate)
-    (org-table-align)))
+    (timesheet-do-period-heading start
+				 (and (symbolp period-or-end)
+				      period-or-end))
+    (save-restriction
+      (org-narrow-to-subtree)
+      (org-end-of-meta-data)
+      (cond
+       ((looking-at "^$"))
+       ((eolp) (newline))
+       ((looking-at org-heading-regexp)
+	(org-open-line 1)))
+      (unless (re-search-forward "^#\\+BEGIN: clocktable" nil t)
+	(setq table-top (point))
+	(insert (format "#+BEGIN: clocktable %s :scope file %s"
+			timesheet-default-clocktable-options
+			(format ":tstart \"%s\" :tend \"%s\""
+				(format-time-string
+				 "%Y-%m-%d" start)
+				(format-time-string
+				 "%Y-%m-%d" end)))
+		"\n#+END: clocktable\n")
+	(goto-char table-top))
+      (org-dblock-update))))
 
 (defun timesheet-week-time (time)
   "Round TIME to beginning of the week."
@@ -875,25 +803,34 @@ Otherwise, simply leave point at the existing heading."
 (defun timesheet-weekly-this ()
   "Calculate timesheet this week."
   (interactive)
-  (timesheet-weekly (timesheet-this-week)))
+  (timesheet-period (timesheet-this-week) 'week))
 
 ;;;###autoload
 (defun timesheet-weekly-last ()
   "Calculate timesheet last week."
   (interactive)
-  (timesheet-weekly (timesheet-last-week)))
+  (timesheet-period (timesheet-last-week) 'week))
+
+;;;###autoload
+(defun timesheet-weekly-at-point ()
+  "Calculate week for the date on this line."
+  (interactive)
+  (let ((day (timesheet-at-point)))
+    (if day
+        (timesheet-period day 'week)
+      (message (concat "no " org-clock-string " at point!")))))
 
 ;;;###autoload
 (defun timesheet-daily-today ()
   "Calculate timesheet for today."
   (interactive)
-  (timesheet-daily (timesheet-today)))
+  (timesheet-period (timesheet-today) 'day))
 
 ;;;###autoload
 (defun timesheet-daily-yesterday ()
   "Calculate timesheet for yesterday."
   (interactive)
-  (timesheet-daily (timesheet-yesterday)))
+  (timesheet-period (timesheet-yesterday) 'day))
 
 ;;;###autoload
 (defun timesheet-daily-at-point ()
@@ -901,7 +838,7 @@ Otherwise, simply leave point at the existing heading."
   (interactive)
   (let ((day (timesheet-at-point)))
     (if day
-        (timesheet-daily (timesheet-midnight day))
+        (timesheet-period (timesheet-midnight day) 'day)
       (message (concat "no " org-clock-string " at point!")))))
 
 ;; NOTE: this is not handled particularly well... and it needs a better user interface
