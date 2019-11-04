@@ -123,6 +123,11 @@ slow down invoice creation."
   :type 'string
   :group 'timesheet)
 
+(defcustom timesheet-clocktable-include-properties nil
+  "A list of property names (as strings) to add to clocktables."
+  :type 'list
+  :group 'timesheet)
+
 ;; get the next invoice number (and increment the counter)
 ;; if the argument is given.. set the next invoice number
 ;;;###autoload
@@ -756,8 +761,12 @@ period.  Otherwise it will go under the heading \"Other\"."
 	(org-open-line 1)))
       (unless (re-search-forward "^#\\+BEGIN: clocktable" nil t)
 	(setq table-top (point))
-	(insert (format "#+BEGIN: clocktable %s :scope file %s"
+	(insert (format "#+BEGIN: clocktable %s :scope file %s %s"
 			timesheet-default-clocktable-options
+			(if timesheet-clocktable-include-properties
+			    (format
+			     "%S" timesheet-clocktable-include-properties)
+			  "")
 			(format ":tstart \"%s\" :tend \"%s\""
 				(format-time-string
 				 "%Y-%m-%d" start)
