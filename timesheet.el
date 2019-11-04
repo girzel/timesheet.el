@@ -128,6 +128,21 @@ slow down invoice creation."
   :type 'list
   :group 'timesheet)
 
+(defcustom timesheet-before-period-report-hook nil
+  "Hook run before a period report is made.
+The hook runs after the appropriate heading has been
+found/created, but before the clocktable is created/updated.
+Point is at the clocktable #+BEGIN line, if the table already
+exists, or at bol where the #+BEGIN line will be inserted."
+  :type 'hook
+  :group 'timesheet)
+
+(defcustom timesheet-after-period-report-hook nil
+  "Hook run after a period report is made.
+Point is at the #+BEGIN line of the report clocktable."
+  :type 'hook
+  :group 'timesheet)
+
 ;; get the next invoice number (and increment the counter)
 ;; if the argument is given.. set the next invoice number
 ;;;###autoload
@@ -759,8 +774,10 @@ period.  Otherwise it will go under the heading \"Other\"."
        ((eolp) (newline))
        ((looking-at org-heading-regexp)
 	(org-open-line 1)))
-      (unless (re-search-forward "^#\\+BEGIN: clocktable" nil t)
+      (if (re-search-forward "^#\\+BEGIN: clocktable" nil t)
+	  (run-hooks 'timesheet-before-period-report-hook)
 	(setq table-top (point))
+	(run-hooks 'timesheet-before-period-report-hook)
 	(insert (format "#+BEGIN: clocktable %s :scope file %s %s"
 			timesheet-default-clocktable-options
 			(if timesheet-clocktable-include-properties
@@ -774,6 +791,7 @@ period.  Otherwise it will go under the heading \"Other\"."
 				 "%Y-%m-%d" end)))
 		"\n#+END: clocktable\n")
 	(goto-char table-top))
+      (run-hooks 'timesheet-after-period-report-hook)
       (org-dblock-update))))
 
 (defun timesheet-week-time (time)
