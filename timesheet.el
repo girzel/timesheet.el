@@ -775,8 +775,10 @@ period.  Otherwise it will go under the heading \"Other\"."
        ((looking-at org-heading-regexp)
 	(org-open-line 1)))
       (if (re-search-forward "^#\\+BEGIN: clocktable" nil t)
-	  (run-hooks 'timesheet-before-period-report-hook)
-	(setq table-top (point))
+	  (progn
+	    (beginning-of-line)
+	    (run-hooks 'timesheet-before-period-report-hook))
+	(setq table-top (point-marker))
 	(run-hooks 'timesheet-before-period-report-hook)
 	(insert (format "#+BEGIN: clocktable %s :scope file %s %s"
 			timesheet-default-clocktable-options
@@ -791,8 +793,8 @@ period.  Otherwise it will go under the heading \"Other\"."
 				 "%Y-%m-%d" end)))
 		"\n#+END: clocktable\n")
 	(goto-char table-top))
-      (run-hooks 'timesheet-after-period-report-hook)
-      (org-dblock-update))))
+      (org-dblock-update)
+      (run-hooks 'timesheet-after-period-report-hook))))
 
 (defun timesheet-week-time (time)
   "Round TIME to beginning of the week."
