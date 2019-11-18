@@ -681,7 +681,7 @@ Assume the Weekly heading unless optional arg DAILY is non-nil."
 		  ('day "Daily")
 		  ('week "Weekly")
 		  ('month "Monthly")
-		  (- "Other")))
+		  (_ "Other")))
 	 (heading (org-find-exact-headline-in-buffer label nil t)))
     (if heading
 	(goto-char heading)
