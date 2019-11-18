@@ -736,7 +736,7 @@ Otherwise, simply leave point at the existing heading."
       (re-search-forward
        (format org-complex-heading-regexp-format
 	       (regexp-quote h-text))
-       (save-excursion (org-end-of-subtree) (point)) t)
+       (save-excursion (org-end-of-subtree)) t)
       (beginning-of-line))))
 
 ;;;###autoload
