@@ -920,7 +920,7 @@ Current month or month for TIME if present."
 (defun timesheet-invoice-this ()
   "Calculate invoice this month."
   (interactive)
-  (timesheet-invoice (timesheet-this-month)))
+  (timesheet-invoice-monthly (timesheet-this-month)))
 
 ;;;###autoload
 (defun timesheet-invoice-at-point ()
@@ -928,83 +928,22 @@ Current month or month for TIME if present."
   (interactive)
   (let ((day (timesheet-at-point)))
     (if day
-        (timesheet-invoice day)
+        (timesheet-invoice-monthly day)
       (message (concat "no " org-clock-string " at point!")))))
 
 ;;;###autoload
 (defun timesheet-invoice-last ()
   "Calculate invoice last month."
   (interactive)
-  (timesheet-invoice (timesheet-last-month)))
+  (timesheet-invoice-monthly (timesheet-last-month)))
 
-;; MUST leave point at end of line so inserting subtrees works as expected
-;;;###autoload
-(defun timesheet-goto-invoices ()
-  "Goto (or create) the Invoices heading."
+(defun timesheet-invoice-weekly-at-point ()
+  "Calculate week for the date on this line."
   (interactive)
-  (let* ((invoices (org-find-exact-headline-in-buffer "Invoices" nil t)))
-    (when invoices
-      (goto-char invoices))
-    (unless invoices
-      (message "adding a Invoices heading...")
-      (goto-char (point-max))
-      (insert "\n* Invoices\n")
-      (forward-line -1))
-    (end-of-line)))
-
-;;;###autoload
-(defun timesheet-goto-invoice (month)
-  "Goto the invoice for the MONTH."
-  (interactive)
-  (timesheet-goto-invoices)  ;; 2013-06 Invoice #430
-  (let* ((yyyy-mm (format-time-string "%Y-%m" month))
-         (m-head (org-goto-first-child))
-         invoice
-         found
-         firstinvoice)
-    (unless m-head
-      (setq firstinvoice t))
-    (while m-head
-      (let* ((ym (nth 4 (org-heading-components)))
-             (prev (point)))
-        (if (s-starts-with? yyyy-mm ym)
-            (progn
-              (setq m-head nil)
-              (setq found t))
-          (setq m-head (org-get-next-sibling)))
-        (unless m-head ;; we have no children
-          (goto-char prev)
-          (end-of-line))))
-    (when found
-      (when (org-goto-first-child)
-        (let ((invoice-str (org-entry-get nil "Invoice")))
-          (when (stringp invoice-str)
-            (setq invoice (string-to-number invoice-str))))
-        (outline-up-heading 1))
-      (end-of-line)
-      (insert "\n** old")
-      (org-cut-subtree)
-      (forward-line -1)
-      (end-of-line))
-    (unless invoice
-      (setq invoice (timesheet-next-invoice)))
-    (unless found
-      (if firstinvoice
-          (org-insert-heading)
-        (org-insert-heading-after-current))
-      (insert (concat yyyy-mm " Invoice #" (int-to-string invoice)))
-      (when firstinvoice
-        (org-do-demote)))
-    (org-insert-heading)
-    (org-do-demote)
-    (insert "Header")
-    (org-set-property "Invoice" (int-to-string invoice))
-    (org-insert-heading-after-current)
-    (insert "Detail")
-    (outline-up-heading 1) ;; go back to the invoice heading
-    (end-of-line)
-    (message (concat "Invoice " (int-to-string invoice)))
-    invoice))
+  (let ((day (timesheet-at-point)))
+    (if day
+        (timesheet-invoice-weekly day)
+      (message (concat "no " org-clock-string " at point!")))))
 
 (defun timesheet-american-month (month)
   "Using MONTH return Month DD, YYYY."
@@ -1014,7 +953,127 @@ Current month or month for TIME if present."
          (dd-yyyy (format-time-string "%e, %Y" month)))
     (concat mname space dd-yyyy)))
 
-(defun timesheet-invoice (month)
+(defun timesheet-invoice-weekly (week)
+  "Prepare invoice for week starting WEEK."
+  (let* ((heading (format-time-string "%Y-%m-%d" week))
+	 (customer (org-table-get-constant "customer"))
+         (invoice-dir
+          (expand-file-name
+	   heading
+           (expand-file-name "Invoices"
+                             (expand-file-name customer
+                                               timesheet-company-dir))))
+	 (next-week (timesheet-add-days week 7))
+	 (all-project-times (timesheet-project-times week next-week))
+	 detail-top row total-hours amount-due invoice-str)
+    (goto-char (timesheet-find-or-create-olp
+		`("Invoices" "Weekly" ,heading) 'sorted))
+    ;; Get or set invoice prop.
+    (setq invoice-str (or (org-entry-get nil "TIMESHEET_INVOICE")
+			  (let ((inv (number-to-string
+				      (timesheet-next-invoice))))
+			    (org-entry-put (point) "TIMESHEET_INVOICE"
+					   inv)
+			    inv)))
+    (make-directory invoice-dir t)
+    ;; Goto Header heading.
+    (goto-char (timesheet-find-or-create-olp
+		`("Invoices" "Weekly" ,heading "Header")))
+    (save-excursion
+      (org-end-of-meta-data)
+      (unless (looking-at-p org-complex-heading-regexp)
+	(delete-region
+	 (point) (save-excursion (org-end-of-subtree t t)))))
+    (org-entry-put (point) "EXPORT_FILE_NAME"
+		   (expand-file-name "header.tex" invoice-dir))
+    (org-end-of-meta-data)
+    (insert "Invoice No.: " invoice-str "\n\n")
+    (insert "Date Submitted: " (format-time-string "%Y-%m-%d" (current-time))
+	    "\n\n")
+    (insert "#+begin_billto\n")
+    (insert (org-entry-get (point) "BillTo1" t) "\n")
+    (insert (org-entry-get (point) "BillTo2" t) "\n")
+    (insert (org-entry-get (point) "BillTo3" t) "\n")
+    (insert "#+end_billto\n\n")
+    (insert "#+begin_remitto\n")
+    (insert (org-entry-get (point) "RemitTo1" t) "\n")
+    (insert (org-entry-get (point) "RemitTo2" t) "\n")
+    (insert (org-entry-get (point) "RemitTo3" t) "\n")
+    (insert "#+end_remitto\n")
+    ;; Export this heading only, as a latex "chunk" that will later be
+    ;; included in the template.
+    (org-export-to-file 'latex
+	(expand-file-name "header.tex" invoice-dir)
+      nil 'subtree nil 'body-only)
+    (goto-char (timesheet-find-or-create-olp
+		`("Invoices" "Weekly" ,heading "Detail")))
+    (save-excursion
+      (org-end-of-meta-data)
+      (unless (looking-at-p org-complex-heading-regexp)
+	(delete-region
+	 (point) (save-excursion (org-end-of-subtree t nil)))))
+    (org-entry-put (point) "EXPORT_FILE_NAME"
+		   (expand-file-name "detail.tex" invoice-dir))
+    (org-end-of-meta-data)
+    (setq detail-top (point-marker))
+    (insert "|----------+-------------+----------+--------+-----------|----|\n")
+    (insert "| Date     | Description | Quantity |   Rate |    Amount |  A |\n")
+    (insert "|----------+-------------+----------+--------+-----------|----|\n")
+    (insert "|          |             |          |        |           |    |\n")
+    (insert "|----------+-------------+----------+--------+-----------|----|\n")
+    (insert "| /Month/  |             |     0.00 |        |      0.00 |    |\n")
+    (insert "|----------+-------------+----------+--------+-----------|----|\n")
+    (insert "#+TBLFM:$4=$rate;%3.2f;::$6=$3*$rate;%3.2f;::$5='(timesheet-currency $6);N::@>$3=vsum(@2$3..@-1$3);%3.2f;::@>$4=string(\"/Total/\");::@>$6=vsum(@2$6..@-1$6;%3.2f;::@>$5='(timesheet-currency (apply '+ '(@2$6..@-1$6)));N::\n")
+    (setq row 3)
+    (timesheet-table-goto detail-top 1 row)
+    ;; insert project times
+    (let (prev-day prev-projects prev-hours)
+      (dolist (pt all-project-times)
+        (let ((day-total (nth 1 pt)) ;; 2013-06-11 Tue = 6.50 hours
+              (project-total (nth 2 pt)) ;; SuperProject = 6.50 hours
+              day project hours)
+          (when (string-match "^\\([0-9\-]+\\) ... = \\([0-9\.]+\\) hours" day-total)
+            (setq day (match-string 1 day-total))
+            (setq hours (match-string 2 day-total))
+            (when (string-match "^\\(.+\\) = \\([0-9\.]+\\) hours" project-total)
+              (setq project (match-string 1 project-total)))
+            (when (and prev-day (not (string= day prev-day))) ;; emit prev-day
+              (insert prev-day)
+              (org-table-next-field)
+              (insert prev-projects)
+              (org-table-next-field)
+              (insert prev-hours)
+              (org-table-insert-row t)
+              (setq row (1+ row))
+              (setq prev-projects nil))
+            (if prev-projects ;; add project to this days project list
+                (setq prev-projects (concat prev-projects ", " project))
+              (setq prev-projects project))
+            (setq prev-day day)
+            (setq prev-hours hours)
+            )))
+      ;; emit last day (if there has been at least one day)
+      (when (and prev-day prev-projects prev-hours)
+        (insert prev-day)
+        (org-table-next-field)
+        (insert prev-projects)
+        (org-table-next-field)
+        (insert prev-hours)))
+    ;; compute formulae in table
+    (org-table-iterate)
+    (timesheet-table-goto detail-top 1 2)
+    (org-table-insert-row t)
+    (timesheet-table-goto detail-top 5 3)
+    (insert "<r>")
+    (org-table-next-field)
+    (insert "<2>")
+    (org-table-align)
+    (org-export-to-file 'latex
+	(expand-file-name "detail.tex" invoice-dir)
+      nil 'subtree nil 'body-only)
+    (outline-up-heading 1)))
+
+(defun timesheet-invoice-monthly (month)
   "Prepare invoice for the given MONTH."
   ;; if this is a new invoice, get the next invoice number
   ;; else preserve the existing number
@@ -1026,15 +1085,32 @@ Current month or month for TIME if present."
                                               (expand-file-name customer
                                                                 timesheet-company-dir))))
          (next-month (timesheet-first-day-next-month month))
-         (invoice (timesheet-goto-invoice month))
-         (invoice-str (int-to-string invoice))
          (all-project-times (timesheet-project-times))
+         (invoice-top (make-marker))
+	 invoice-str
          header-top
          detail-top
          row
          total-hours amount-due)
     (make-directory invoice-dir t)
-    (org-goto-first-child) ;; Header
+    (goto-char (move-marker
+		invoice-top
+		(timesheet-find-or-create-olp
+		 `("Invoices" "Monthly" ,yyyy-mm) 'sorted)))
+    ;; Get or set invoice prop.
+    (setq invoice-str (or (org-entry-get nil "TIMESHEET_INVOICE")
+			  (let ((inv (number-to-string
+				      (timesheet-next-invoice))))
+			    (org-entry-put (point) "TIMESHEET_INVOICE"
+					   inv)
+			    inv)))
+    (goto-char (timesheet-find-or-create-olp
+		`("Invoices" "Monthly" ,yyyy-mm "Header")))
+    (save-excursion
+      (org-end-of-meta-data)
+      (unless (looking-at-p org-complex-heading-regexp)
+	(delete-region
+	 (point) (save-excursion (org-end-of-subtree t t)))))
     (org-set-property "BillDate" (timesheet-american-month next-month))
     (org-set-property "DueDate" (timesheet-american-month (timesheet-last-day-in-month next-month)))
     (org-set-property "TotalHours" "0.00")
@@ -1042,15 +1118,8 @@ Current month or month for TIME if present."
     (org-set-property "TABLE_EXPORT_FILE" (expand-file-name "header.tsv" invoice-dir))
     (org-set-property "TABLE_EXPORT_FORMAT" "orgtbl-to-tsv")
     (org-set-property "PDF" (concat "file://" invoice-dir "/Invoice-" invoice-str ".pdf"))
-    ;; move below the properties
-    (org-get-next-sibling)
-    (forward-line -1)
-    (org-cycle)
-    (org-get-next-sibling)
-    (forward-line -1)
-    (end-of-line 1)
-    (org-return)
-    (setq header-top (point))
+    (org-end-of-meta-data)
+    (setq header-top (point-marker))
     (insert "#+BEGIN:\n")
     (insert "|---------------+--------------+-------------|\n")
     (insert "| /Remit To/    | /Date/       | /Invoice #/ |\n")
@@ -1069,25 +1138,20 @@ Current month or month for TIME if present."
     (insert "|---------------+--------------+-------------|\n")
     (insert "|               |              |             |\n")
     (insert "|---------------+--------------+-------------|\n")
-    (insert "#+TBLFM: @2$1='(concat \"$PROP_RemitTo1\");::@2$2='(concat \"$PROP_BillDate\");::@2$3=$PROP_Invoice;N::@3$1='(concat \"$PROP_RemitTo2\");::@4$1='(concat \"$PROP_RemitTo3\");::@6$1='(concat \"$PROP_BillTo1\");::@6$2='(concat \"$PROP_Terms\");::@6$3='(concat \"$PROP_DueDate\");::@7$1='(concat \"$PROP_BillTo2\");::@8$1='(concat \"$PROP_BillTo3\");::@10$1='(concat \"$PROP_TotalHours\");%3.2f::@10$2='(timesheet-currency $PROP_AmountDue);::\n")
-    (insert "#+END:")
-    (org-get-last-sibling) ; NOT (outline-previous-visible-heading)
-    (forward-line)
-    (org-cycle)
-    (goto-char header-top)
-    (forward-line)
-    (org-get-next-sibling) ;; Detail
+    (insert "#+TBLFM: @2$1='(concat \"$PROP_RemitTo1\");::@2$2='(concat \"$PROP_BillDate\");::@2$3=$PROP_TIMESHEET_INVOICE;N::@3$1='(concat \"$PROP_RemitTo2\");::@4$1='(concat \"$PROP_RemitTo3\");::@6$1='(concat \"$PROP_BillTo1\");::@6$2='(concat \"$PROP_Terms\");::@6$3='(concat \"$PROP_DueDate\");::@7$1='(concat \"$PROP_BillTo2\");::@8$1='(concat \"$PROP_BillTo3\");::@10$1='(concat \"$PROP_TotalHours\");%3.2f::@10$2='(timesheet-currency $PROP_AmountDue);::\n")
+    (insert "#+END:\n")
+    (goto-char (timesheet-find-or-create-olp
+		`("Invoices" "Monthly" ,yyyy-mm "Detail")))
+    (save-excursion
+      (org-end-of-meta-data)
+      (unless (looking-at-p org-complex-heading-regexp)
+	(delete-region
+	 (point) (save-excursion (org-end-of-subtree t t)))))
+    ;; Get or set invoice prop.
     (org-set-property "TABLE_EXPORT_FILE" (expand-file-name "detail.tsv" invoice-dir))
     (org-set-property "TABLE_EXPORT_FORMAT" "orgtbl-to-tsv")
-    ;; move below the properties
-    (org-get-next-sibling)
-    (forward-line -1)
-    (org-cycle)
-    (org-get-next-sibling)
-    (forward-line -1)
-    (end-of-line 1)
-    (org-return)
-    (setq detail-top (point))
+    (org-end-of-meta-data)
+    (setq detail-top (point-marker))
     (insert "#+BEGIN:\n")
     (insert "|----------+-------------+----------+--------+-----------|----|\n")
     (insert "| Date     | Description | Quantity |   Rate |    Amount |  A |\n")
@@ -1097,10 +1161,7 @@ Current month or month for TIME if present."
     (insert "| /Month/  |             |     0.00 |        |      0.00 |    |\n")
     (insert "|----------+-------------+----------+--------+-----------|----|\n")
     (insert "#+TBLFM:$4=$rate;%3.2f;::$6=$3*$rate;%3.2f;::$5='(timesheet-currency $6);N::@>$3=vsum(@2$3..@-1$3);%3.2f;::@>$4=string(\"/Total/\");::@>$6=vsum(@2$6..@-1$6;%3.2f;::@>$5='(timesheet-currency (apply '+ '(@2$6..@-1$6)));N::\n")
-    (insert "#+END:")
-    (org-get-last-sibling)
-    (forward-line)
-    (org-cycle)
+    (insert "#+END:\n")
     (setq row 4)
     (timesheet-table-goto detail-top 1 row)
     ;; insert project times
@@ -1165,6 +1226,7 @@ Current month or month for TIME if present."
     (org-table-align)
     (org-table-export)
     (timesheet-run timesheet-invoice-script "-d" "-v" "-i" invoice-dir "-p")
+    (goto-char invoice-top)
     (message (concat yyyy-mm " Invoice #" invoice-str))))
 
 (defun timesheet-run (script &rest args)
