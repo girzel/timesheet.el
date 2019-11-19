@@ -241,6 +241,63 @@ The constant roundmin can be set to any value between 1 and 60 (default 15)."
   ;; NOTE: for a brief moment a version of org worked with simply (org-get-outline-path)
   (append (org-get-outline-path) (list (nth 4 (org-heading-components)))))
 
+(defun timesheet-find-or-create-olp (segments &optional sortedp)
+  "Find the heading corresponding to outline path SEGMENTS.
+Each element of SEGMENTS should be a string representing exact
+header text.  Creates any headings that do not exist, and returns
+a marker pointing to the final header.
+
+When optional SORTEDP is non-nil, any newly-created heading
+segments will be inserted in sorted order among their siblings,
+if any.
+
+The current value of `case-fold-search' will affect which path
+segments are considered to be \"found\"."
+  ;; First, assume it exists.
+  (let ((found-marker (ignore-errors (org-find-olp segments t)))
+	(sorter (when sortedp
+		  (if (functionp sortedp) sortedp #'string<)))
+	(crawl 0)
+	partial segment)
+    (save-excursion
+      (if found-marker found-marker
+	(while segments
+	  (setq found-marker
+		(condition-case nil
+		    (org-find-olp
+		     (setq partial
+			   (append partial
+				   (list (setq segment (pop segments)))))
+		     t)
+		  (error
+		   ;; If there's no found-marker then we're inserting
+		   ;; a top-level heading, so stick it at the end of
+		   ;; the buffer.
+		   (if found-marker
+		       (progn
+			 (goto-char found-marker)
+			 (if (and sorter
+				  (org-goto-first-child))
+			     (progn
+			       (while (and (funcall
+					    sorter
+					    (nth 4 (org-heading-components))
+					    segment)
+					   (/= crawl (point)))
+				 (setq crawl (point))
+				 (org-forward-heading-same-level 1))
+			       ;;Gross.
+			       (org-insert-heading (when (= crawl (point))
+						     '(4))))
+			   (end-of-line)
+			   (org-insert-subheading '(4))))
+		     (goto-char (point-max))
+		     (org-insert-heading nil nil 'top-level))
+		   (insert segment)
+		   (beginning-of-line)
+		   (point-marker)))))
+	found-marker))))
+
 ;;;###autoload
 (defun timesheet-clock-update-timeclock (&optional withpath)
   "If this is a CLOCK line, update /round it and return t.
@@ -352,83 +409,6 @@ Returns the value of midnight on that day."
         (when (looking-at re)
           (timesheet-midnight (apply 'encode-time (org-parse-time-string (match-string 1)))))))))
 
-(defun timesheet-heading ()
-  "Goto (or create) the Timesheet heading."
-  (let* ((timesheet (org-find-exact-headline-in-buffer "Timesheet" nil t)))
-    (when timesheet
-      (goto-char timesheet))
-    (unless timesheet
-      (message "adding a Timesheet...")
-      (goto-char (point-max))
-      (insert "\n* Timesheet"))
-    (beginning-of-line)))
-
-;; BUG: on creating the month heading for a new month... it ends up AFTER
-;; the summary (it should be before!)
-(defun timesheet-heading-month (day)
-  "Goto (or create) the Timesheet/month heading for DAY."
-  (timesheet-heading)
-  (let* ((yyyy-mm (format-time-string "%Y-%m" day))
-         (m-head (org-goto-first-child))
-         found
-         firstmonth)
-    (unless m-head ;; no months have been entered yet
-      (setq firstmonth t)
-      (end-of-line)
-      (org-insert-subheading t))
-    (while m-head ;; checking for a matching month
-      (let* ((m (nth 4 (org-heading-components)))
-             (prev (point)))
-        (if (string= m yyyy-mm) ;; found it!
-            (progn
-              (setq m-head nil)
-              (setq found t))
-          (setq m-head (org-get-next-sibling)))
-        (unless m-head ;; we have no children
-          (goto-char prev)
-          (end-of-line))))
-    (unless found
-      (unless firstmonth
-        (org-insert-heading-after-current))
-      (insert yyyy-mm)))
-  (beginning-of-line))
-
-;; FIX: insert in order
-(defun timesheet-heading-day (day)
-  "Goto (or create) the Timesheet/month/day heading for DAY."
-  (timesheet-heading-month day)
-  ;; (timesheet-debug-msg "timesheet-heading-day BEGIN")
-  ;; (timesheet-debug-msg "timesheet-heading-day BEGIN 2")
-  ;; (timesheet-debug-msg "timesheet-heading-day BEGIN 3")
-  (let* ((dday (format-time-string "%Y-%m-%d %a" day))
-         (d-head (org-goto-first-child))
-         found
-         firstday)
-    ;; (timesheet-debug-msg "looking for " dday)
-    (unless d-head ;; no days yet
-      (setq firstday t)
-      (end-of-line)
-      (org-insert-subheading t))
-    (while d-head
-      (let* ((d (nth 4 (org-heading-components)))
-             (prev (point)))
-        ;; (timesheet-debug-msg "checking " d)
-        (if (s-starts-with? dday d)
-            (progn
-              ;; (timesheet-debug-msg "FOUND it")
-              (setq d-head nil)
-              (setq found t))
-          (setq d-head (org-get-next-sibling)))
-        (unless d-head ;; no more kids
-          ;; (timesheet-debug-msg "no more kids")
-          (goto-char prev)
-          (end-of-line))))
-    (unless found
-      ;; (timesheet-debug-msg "NOT found")
-      (unless firstday
-        (org-insert-heading-after-current))
-      (insert dday))))
-
 (defun timesheet-cmp-task (atask btask)
   "Compare two tasks and return t if ATASK < BTASK."
   (let* ((apath (car atask))
@@ -538,30 +518,24 @@ Returns the value of midnight on that day."
   "Calculate timesheet for the given DAY."
   (let* ((clocks (timesheet-clocks day (timesheet-add-days day 1)))
          (tasks (timesheet-rollup-times clocks))
-         (day-hours (nth 3 (pop tasks)))
-         task
-         prevpath)
-    (timesheet-heading-day day)
-    ;; delete contents of heading
+         (day-hours (nth 3 (pop tasks))))
+    (goto-char (timesheet-find-or-create-olp
+		(list "Timesheet"
+		      (format-time-string "%Y-%m" day))
+		t))
+    ;; Delete contents of heading.
     (org-cut-subtree)
-    ;; insert updated data for the day
-    (insert (format "*** %s = %3.2f hours\n" (format-time-string "%Y-%m-%d %a" day) day-hours))
+    (org-insert-subheading '(4))
+    ;; Insert updated data for the day.
+    (insert (format "%s = %3.2f hours\n"
+		    (format-time-string "%Y-%m-%d %a" day) day-hours))
     (forward-line -1)
     (end-of-line)
-    (while (setq task (pop tasks))
-      (let* ((path (car task))
-             (p (length path))
-             (start (nth 1 task))
-             (stop (nth 2 task))
-             (hours (nth 3 task)))
-        (unless start ;; do NOT print clock entries
-          (insert "\n***")
-          (while (> p 0)
-            (insert "*")
-            (setq p (1- p)))
-          (insert (format " %s = %3.2f hours" (car (last path)) hours))
-          )
-        (setq prevpath path)))))
+    (pcase-dolist (`(,path ,start ,stop ,hours) tasks)
+      ;; Don't print clock entries.
+      (unless start
+	(insert "\n***" (make-string (length path) "*"))
+        (insert (format " %s = %3.2f hours" (car (last path)) hours))))))
 
 (defun timesheet-clocks (start-time end-time)
   "Return a list of clocks for the time interval given by START-TIME and END-TIME."
@@ -643,13 +617,11 @@ Return value is a list of times that look like, for instance:
 (\"2019-10\" \"2019-10-28 Mon = 7.00 hours\" \"Report writing = 3.00 hours\")"
   (save-excursion
     (save-restriction
-      (timesheet-heading)
+      (goto-char (timesheet-find-or-create-olp '("Timesheet")))
       (when (or timesheet-always-recalculate-times
 		;; Timesheet subtree is empty.
-		(= (line-number-at-pos)
-		   (save-excursion
-		     (org-end-of-subtree)
-		     (line-number-at-pos))))
+		(save-excursion
+		  (null (org-goto-first-child))))
 	(timesheet-calc-all))
       (let ((date-re "^[[:digit:]]\\{4\\}-[[:digit:]]\\{2\\}-[[:digit:]]\\{2\\}")
 	    path project-times date)
@@ -674,22 +646,6 @@ Return value is a list of times that look like, for instance:
 	     (push (cdr path) project-times))))
         (sort project-times 'timesheet-cmp-string-lists)))))
 
-(defun timesheet-toplevel-period-heading (period)
-  "Goto (or create) the top-level heading for time reports.
-Assume the Weekly heading unless optional arg DAILY is non-nil."
-  (let* ((label (pcase period
-		  ('day "Daily")
-		  ('week "Weekly")
-		  ('month "Monthly")
-		  (_ "Other")))
-	 (heading (org-find-exact-headline-in-buffer label nil t)))
-    (if heading
-	(goto-char heading)
-      (message "adding a %s section..." label)
-      (goto-char (point-max))
-      (insert (format "\n* %s" label)))
-    (beginning-of-line)))
-
 (defun timesheet--make-timesheet-heading-text (date period)
   "Make a timesheet report heading for DATE.
 PERIOD may be one of the symbols `day', `week', or `month'."
@@ -701,43 +657,6 @@ PERIOD may be one of the symbols `day', `week', or `month'."
             (format-time-string "%B %d" date)
             (format-time-string "%B %d" (timesheet-add-days date 6))))
     (_ (format-time-string "%B" date))))
-
-(defun timesheet-do-period-heading (date &optional period replace)
-  "Goto (and maybe insert) the heading for period beginning DATE.
-If optional arg DAILY is non-nil, insert a daily heading,
-otherwise insert weekly.  If optional arg REPLACE is non-nil,
-replace an existing heading (and its contents) if found.
-Otherwise, simply leave point at the existing heading."
-  (timesheet-toplevel-period-heading period)
-  (recenter-top-bottom 1)
-  (let* ((top (point))
-	 (h-text (timesheet--make-timesheet-heading-text date period))
-         (existing
-	  (catch 'found
-	    (org-map-tree
-	     (lambda ()
-	       (when (string= h-text (nth 4 (org-heading-components)))
-		 (throw 'found (point))))))))
-    (if (and existing (null replace))
-	(goto-char existing)
-      (when existing
-	(goto-char existing)
-	(org-cut-subtree)
-	(goto-char top))
-      (end-of-line)
-      (if (org-goto-first-child)
-	  (org-insert-heading-respect-content)
-	(org-insert-heading)
-	(org-do-demote))
-      (insert h-text)
-      (goto-char top)
-      (org-sort-entries t ?a)
-      ;; Yuck.
-      (re-search-forward
-       (format org-complex-heading-regexp-format
-	       (regexp-quote h-text))
-       (save-excursion (org-end-of-subtree)) t)
-      (beginning-of-line))))
 
 ;;;###autoload
 (defun timesheet-table-goto (top col row)
@@ -763,9 +682,15 @@ period.  Otherwise it will go under the heading \"Other\"."
 		 ('week (timesheet-add-days start 7))
 		 ('month (timesheet-first-day-next-month start)))))
 	table-top)
-    (timesheet-do-period-heading start
-				 (and (symbolp period-or-end)
-				      period-or-end))
+    (goto-char (timesheet-find-or-create-olp
+		(list
+		 (pcase period-or-end
+		   ('day "Daily")
+		   ('week "Weekly")
+		   ('month "Monthly")
+		   (_ "Other"))
+		 (timesheet--make-timesheet-heading-text
+		  start period-or-end))))
     (save-restriction
       (org-narrow-to-subtree)
       (org-end-of-meta-data)
