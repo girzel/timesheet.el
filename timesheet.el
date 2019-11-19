@@ -74,10 +74,6 @@
 
 (defconst timesheet-path (file-name-directory (or load-file-name (buffer-file-name))))
 
-(defun timesheet-home-dir ()
-  "Return the user's HOME directory."
-  (file-name-as-directory (expand-file-name "~")))
-
 (defconst timesheet-currencies
   '(("USD" . "$")
     ("GBP" . "£")
@@ -102,7 +98,7 @@
   :group 'timesheet)
 
 (defcustom timesheet-company-dir
-  (expand-file-name "Timesheet" (timesheet-home-dir))
+  (expand-file-name "Timesheet" "~")
   "Parent directory for timesheet invoices."
   :type 'string
   :group 'timesheet)
