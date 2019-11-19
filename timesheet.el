@@ -139,6 +139,16 @@ Point is at the #+BEGIN line of the report clocktable."
   :type 'hook
   :group 'timesheet)
 
+(defcustom timesheet-latex-program (executable-find "xelatex")
+  "The LaTeX executable that will be used to compile invoices."
+  :type 'string
+  :group 'timesheet)
+
+(defcustom timesheet-latex-extra-args nil
+  "A list of extra arguments that will be passed to LaTeX."
+  :type 'list
+  :group 'timesheet)
+
 ;; get the next invoice number (and increment the counter)
 ;; if the argument is given.. set the next invoice number
 ;;;###autoload
@@ -961,6 +971,8 @@ Current month or month for TIME if present."
                                                timesheet-company-dir))))
 	 (next-week (timesheet-add-days week 7))
 	 (all-project-times (timesheet-project-times week next-week))
+	 (invoice-template (or (org-entry-get (point) "Invoice_Template" t)
+			       (error "No Invoice_Template property set")))
 	 detail-top row total-hours amount-due invoice-str)
     (goto-char (timesheet-find-or-create-olp
 		`("Invoices" "Weekly" ,heading) 'sorted))
@@ -1067,7 +1079,28 @@ Current month or month for TIME if present."
     (org-export-to-file 'latex
 	(expand-file-name "detail.tex" invoice-dir)
       nil 'subtree nil 'body-only)
+    (timesheet-build-latex invoice-dir invoice-str customer invoice-template)
     (outline-up-heading 1)))
+
+(defun timesheet-build-latex (dir invoice-str customer template)
+  "Compile a LaTeX invoice in DIR.
+This function expects that DIR already contains \"header.tex\"
+and \"detail.tex\" files, and that the template specified by
+TEMPLATE includes those files.  If TEMPLATE is an absolute path,
+it will be copied into DIR before running LaTeX, otherwise it is
+expected to already exist in DIR.
+
+CUSTOMER and INVOICE-STR are used to construct the output
+filename."
+  (let ((t-file (expand-file-name (file-name-nondirectory template) dir)))
+    (if (file-name-absolute-p template)
+	(copy-file template t-file 'overwrite))
+    (apply
+     #'call-process
+     timesheet-latex-program
+     nil (get-buffer-create " *timesheet latex output*") nil
+     t-file (format "-jobname=%s_%s.tex" customer invoice-str)
+     timesheet-latex-extra-args)))
 
 (defun timesheet-invoice-monthly (month)
   "Prepare invoice for the given MONTH."
