@@ -540,7 +540,7 @@ Returns the value of midnight on that day."
     (pcase-dolist (`(,path ,start ,stop ,hours) tasks)
       ;; Don't print clock entries.
       (unless start
-	(insert "\n***" (make-string (length path) "*"))
+	(insert "\n***" (make-string (length path) ?* t))
         (insert (format " %s = %3.2f hours" (car (last path)) hours))))))
 
 (defun timesheet-clocks (start-time end-time)
